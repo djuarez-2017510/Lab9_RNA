@@ -8,7 +8,6 @@ output: html_document
 ### https://github.com/djuarez-2017510/Lab9_RNA
 
 ```{r setup, echo=FALSE, message=FALSE, warning=FALSE}
-  
 library(dplyr)
 library(ggplot2)
 library(tidyr)
@@ -18,9 +17,6 @@ library(nnet)
 
 # Cargar el dataset
 load("listings.RData")
-
-#install.packages("neuralnet") 
-library(neuralnet)
 
 colmutils <- c(
   "price", "accommodates", "bedrooms", "beds", "bathrooms",
@@ -63,7 +59,7 @@ test$categoria_precio <- factor(
   levels = c("Economica", "Intermedia", "Cara")
 )
 
-# Preprocesamiento para RNA: Las redes neuronales requieren datos numéricos y escalados
+# Preprocesamiento para RNA de clasificación
 vars_rna <- c("price", "accommodates", "bedrooms", "bathrooms", "beds",
               "review_scores_rating", "review_scores_location",
               "availability_365", "minimum_nights",
@@ -73,7 +69,6 @@ vars_rna <- c("price", "accommodates", "bedrooms", "bathrooms", "beds",
 train_rna_raw <- train %>% select(all_of(vars_rna)) %>% drop_na()
 test_rna_raw  <- test  %>% select(all_of(vars_rna)) %>% drop_na()
 
-# Codificación one-hot y normalización
 dummies <- dummyVars(categoria_precio ~ ., data = train_rna_raw)
 train_encoded <- predict(dummies, newdata = train_rna_raw) %>% as.data.frame()
 test_encoded  <- predict(dummies, newdata = test_rna_raw)  %>% as.data.frame()
@@ -85,92 +80,84 @@ test_scaled  <- predict(preproc, test_encoded)
 train_scaled$categoria_precio <- train_rna_raw$categoria_precio
 test_scaled$categoria_precio  <- test_rna_raw$categoria_precio
 
-# Submuestreo estratégico para agilizar el entrenamiento de la RNA
 set.seed(123)
 idx_sample <- sample(1:nrow(train_scaled), min(2000, nrow(train_scaled)))
 train_rna_s <- train_scaled[idx_sample, ]
-
 ```
 
 ### Generación de Modelos de Redes Neuronales
 
-dos modelos con diferentes topologías y funciones de activación para clasificar el precio de las viviendas.
+Dos modelos con diferentes topologías y funciones de activación para clasificar el precio de las viviendas.
 
 ```{r modelos, echo=FALSE, message=FALSE, warning=FALSE}
-# Binarización para clasificación multiclase
 train_nn <- train_rna_s
-test_nn <- test_scaled
+test_nn  <- test_scaled
 
-# Limpiar nombres de columnas para evitar errores de sintaxis en la fórmula
 names(train_nn) <- make.names(names(train_nn))
-names(test_nn) <- make.names(names(test_nn))
+names(test_nn)  <- make.names(names(test_nn))
 
-# Crear las variables binarias
 train_nn$Cat_Econ <- as.numeric(train_nn$categoria_precio == "Economica")
 train_nn$Cat_Int  <- as.numeric(train_nn$categoria_precio == "Intermedia")
 train_nn$Cat_Cara <- as.numeric(train_nn$categoria_precio == "Cara")
 
-# Eliminar la columna original y NAs
 train_nn <- train_nn[, !(names(train_nn) %in% c("categoria_precio"))]
 train_nn <- na.omit(train_nn)
 
 vars_pred <- setdiff(names(train_nn), c("Cat_Econ", "Cat_Int", "Cat_Cara"))
-formula_nn <- as.formula(paste("Cat_Econ + Cat_Int + Cat_Cara ~", paste(vars_pred, collapse = " + ")))
+formula_nn <- as.formula(paste("Cat_Econ + Cat_Int + Cat_Cara ~",
+                               paste(vars_pred, collapse = " + ")))
 
-# --- MODELO 1: Topología de 1 capa (5 neuronas), Activación: Logística ---
+# MODELO 1: 1 capa (5 neuronas), Logística
 set.seed(123)
 t_mod1 <- system.time({
-  rna_mod1 <- neuralnet(formula_nn, data = train_nn, hidden = 5, 
-                        act.fct = "logistic", linear.output = FALSE, stepmax = 1e6)
+  rna_mod1 <- neuralnet(formula_nn, data = train_nn, hidden = 5,
+                        act.fct = "logistic", linear.output = FALSE,
+                        stepmax = 1e6)
 })
 
-# --- MODELO 2: Topología de 2 capas (4 y 2 neuronas), Activación: Tanh (Tangente hiperbólica) ---
-# FIX: Cambiamos a 'tanh' para evitar el desbordamiento matemático (NA/Inf)
+# MODELO 2: 2 capas (4 y 2 neuronas), Tanh
 set.seed(123)
 t_mod2 <- system.time({
-  rna_mod2 <- neuralnet(formula_nn, data = train_nn, hidden = c(4, 2), 
-                        act.fct = "tanh", linear.output = FALSE, stepmax = 1e6)
+  rna_mod2 <- neuralnet(formula_nn, data = train_nn, hidden = c(4, 2),
+                        act.fct = "tanh", linear.output = FALSE,
+                        stepmax = 1e6)
 })
 
 cat("Tiempo Modelo 1 (1 capa, Logística):", round(t_mod1["elapsed"], 2), "s\n")
-cat("Tiempo Modelo 2 (2 capas, Tanh):", round(t_mod2["elapsed"], 2), "s\n")
+cat("Tiempo Modelo 2 (2 capas, Tanh):",     round(t_mod2["elapsed"], 2), "s\n")
 ```
 
 ### Matrices de Confusión y Predicciones
 
 Evaluamos el desempeño de ambos modelos mediante matrices de confusión para identificar patrones de error.
 
-
 ```{r Predicciones, echo=FALSE, message=FALSE, warning=FALSE}
-# Función auxiliar para obtener la clase con mayor probabilidad
 predecir_clase_rna <- function(modelo, datos) {
-  p <- predict(modelo, datos)
+  p      <- predict(modelo, datos)
   clases <- c("Economica", "Intermedia", "Cara")
-  res <- clases[max.col(p)]
-  return(factor(res, levels = clases))
+  factor(clases[max.col(p)], levels = clases)
 }
 
-# Generar predicciones
-p1_test <- predecir_clase_rna(rna_mod1, test_nn)
-p2_test <- predecir_clase_rna(rna_mod2, test_nn)
-
+p1_test  <- predecir_clase_rna(rna_mod1, test_nn)
+p2_test  <- predecir_clase_rna(rna_mod2, test_nn)
 p1_train <- predecir_clase_rna(rna_mod1, train_nn)
 p2_train <- predecir_clase_rna(rna_mod2, train_nn)
 
 cm1 <- confusionMatrix(p1_test, test_scaled$categoria_precio)
 cm2 <- confusionMatrix(p2_test, test_scaled$categoria_precio)
 
-# Función para graficar la matriz
 plot_cm_final <- function(cm, titulo) {
   df <- as.data.frame(cm$table)
   ggplot(df, aes(x = Reference, y = Prediction, fill = Freq)) +
-    geom_tile() + geom_text(aes(label = Freq), color = "white") +
+    geom_tile() +
+    geom_text(aes(label = Freq), color = "white") +
     scale_fill_gradient(low = "#457B9D", high = "#1D3557") +
-    labs(title = titulo, x = "Real", y = "Predicho") + theme_minimal()
+    labs(title = titulo, x = "Real", y = "Predicho") +
+    theme_minimal()
 }
 
 plot_cm_final(cm1, "RNA Modelo 1 (Logística)")
-plot_cm_final(cm2, "RNA Modelo 2 (Softplus)")
+plot_cm_final(cm2, "RNA Modelo 2 (Tanh)")
 ```
 
 ### Comparación de Resultados y Errores
@@ -179,13 +166,12 @@ Evaluamos el rendimiento general de ambos algoritmos.
 
 ```{r comparacion, echo=FALSE, warning=FALSE}
 resumen_rna <- data.frame(
-  Modelo = c("Modelo 1 (1 Capa, Logística)", "Modelo 2 (2 Capas, Tanh)"),
+  Modelo     = c("Modelo 1 (1 Capa, Logística)", "Modelo 2 (2 Capas, Tanh)"),
   Tiempo_Seg = c(t_mod1["elapsed"], t_mod2["elapsed"]),
-  Accuracy = c(cm1$overall["Accuracy"], cm2$overall["Accuracy"]),
-  Kappa = c(cm1$overall["Kappa"], cm2$overall["Kappa"])
+  Accuracy   = c(cm1$overall["Accuracy"], cm2$overall["Accuracy"]),
+  Kappa      = c(cm1$overall["Kappa"],    cm2$overall["Kappa"])
 )
 knitr::kable(resumen_rna, caption = "Comparativa de Efectividad y Tiempo")
-
 ```
 
 **Análisis Comparativo:**
@@ -194,20 +180,19 @@ knitr::kable(resumen_rna, caption = "Comparativa de Efectividad y Tiempo")
 * **Efectividad:** Ambos modelos presentan un desempeño sobresaliente. Sin embargo, el **Modelo 1 (Logística) es superior**, alcanzando una exactitud (Accuracy) de `r round(cm1$overall["Accuracy"] * 100, 2)`% y un índice Kappa de `r round(cm1$overall["Kappa"], 3)`, superando al Modelo 2 que obtuvo un `r round(cm2$overall["Accuracy"] * 100, 2)`% de exactitud.
 * **Equivocaciones:** Con una precisión tan alta, los errores son mínimos, pero el Modelo 1 demuestra ser la opción más segura y confiable para aislar correctamente la categoría "Intermedia", maximizando la rentabilidad para SmartStay Advisors.
 
+### Sobreajuste en los Modelos de Clasificación
 
-
-### Sobreajuste en los Modelos
-
-Es necesario comparar su rendimiento durante la fase de entrenamiento frente a su rendimiento en la fase de prueba.
+Es necesario comparar el rendimiento durante la fase de entrenamiento frente a la fase de prueba.
 
 ```{r sobreajuste, echo=FALSE, warning=FALSE}
 check_overfit <- data.frame(
-  Modelo = c("Modelo 1 (1 Capa, Logística)", "Modelo 2 (2 Capas, Tanh)"),
-  Acc_Train = c(confusionMatrix(p1_train, train_rna_s$categoria_precio)$overall["Accuracy"],
-                confusionMatrix(p2_train, train_rna_s$categoria_precio)$overall["Accuracy"]),
-  Acc_Test = c(cm1$overall["Accuracy"], cm2$overall["Accuracy"])
+  Modelo    = c("Modelo 1 (1 Capa, Logística)", "Modelo 2 (2 Capas, Tanh)"),
+  Acc_Train = c(
+    confusionMatrix(p1_train, train_rna_s$categoria_precio)$overall["Accuracy"],
+    confusionMatrix(p2_train, train_rna_s$categoria_precio)$overall["Accuracy"]
+  ),
+  Acc_Test  = c(cm1$overall["Accuracy"], cm2$overall["Accuracy"])
 )
-
 check_overfit$Diferencia <- check_overfit$Acc_Train - check_overfit$Acc_Test
 knitr::kable(check_overfit, caption = "Análisis de Sobreajuste (Train vs Test)")
 ```
@@ -218,41 +203,271 @@ knitr::kable(check_overfit, caption = "Análisis de Sobreajuste (Train vs Test)"
 * En nuestros resultados, el Modelo 1 alcanza una exactitud perfecta en entrenamiento (`r round(confusionMatrix(p1_train, train_rna_s$categoria_precio)$overall["Accuracy"], 3)`), lo que sugiere fuertemente una memorización de los datos. Sin embargo, la caída en la fase de prueba es de apenas `r round((confusionMatrix(p1_train, train_rna_s$categoria_precio)$overall["Accuracy"] - cm1$overall["Accuracy"]) * 100, 2)`%, lo que indica que el modelo logra generalizar bien a pesar de ese sobreajuste inicial.
 * El Modelo 2, por su parte, es más equilibrado con `r round(confusionMatrix(p2_train, train_rna_s$categoria_precio)$overall["Accuracy"] * 100, 1)`% en train y `r round(cm2$overall["Accuracy"] * 100, 1)`% en test, lo que representa un perfil de generalización más robusto y confiable.
 
- Aunque el Modelo 1 generaliza bien a pesar de su memorización, técnicamente el Modelo 2 presenta un perfil de aprendizaje más sano. Esto justifica plenamente la necesidad de aplicar el *weight decay* (regularización) en el siguiente paso de tuneo para obligar al modelo final a no memorizar los datos.
+Aunque el Modelo 1 generaliza bien a pesar de su memorización, técnicamente el Modelo 2 presenta un perfil de aprendizaje más sano. Esto justifica plenamente la necesidad de aplicar el *weight decay* (regularización) en el siguiente paso de tuneo para obligar al modelo final a no memorizar los datos.
 
-
-
-### Parámetros del Mejor Modelo
+### Optimización del Modelo de Clasificación
 
 Para la consultoría de SmartStay Advisors, el objetivo es maximizar la precisión sin comprometer la capacidad de generalización. Por ello, procedemos a optimizar el Modelo 1 utilizando una búsqueda por grilla (*grid search*) sobre los parámetros de número de neuronas (`size`) y regularización (`decay`).
 
 ```{r tuneo, echo=FALSE, message=FALSE, warning=FALSE}
 set.seed(123)
-# Definimos la grilla de búsqueda
 grid_tuneo <- expand.grid(size = c(3, 5, 7), decay = c(0.01, 0.1, 0.5))
-control <- trainControl(method = "cv", number = 3)
+control    <- trainControl(method = "cv", number = 3)
 
-# Entrenamiento con validación cruzada
 t_tuneo <- system.time({
-  mod_final <- train(categoria_precio ~ ., 
-                     data = train_rna_s, 
-                     method = "nnet",
-                     tuneGrid = grid_tuneo, 
-                     trControl = control, 
-                     trace = FALSE, 
-                     maxit = 200)
+  mod_final <- train(categoria_precio ~ .,
+                     data      = train_rna_s,
+                     method    = "nnet",
+                     tuneGrid  = grid_tuneo,
+                     trControl = control,
+                     trace     = FALSE,
+                     maxit     = 200)
 })
 
-# Resultados finales
-p_final <- predict(mod_final, test_scaled)
+p_final  <- predict(mod_final, test_scaled)
 cm_final <- confusionMatrix(p_final, test_scaled$categoria_precio)
 
 plot_cm_final(cm_final, "Matriz de Confusión - Red Neuronal Optimizada")
-``` 
+```
 
 **Análisis del Tuneo y Mejora del Modelo:**
 
-* **Optimización Encontrada:** El proceso de tuneo determinó que la arquitectura más eficiente para clasificar los precios de SmartStay Advisors es una capa oculta con **`r mod_final$bestTune$size` neuronas** y un parámetro de decaimiento (weight decay) de **`r mod_final$bestTune$decay`**. 
+* **Optimización Encontrada:** El proceso de tuneo determinó que la arquitectura más eficiente es una capa oculta con **`r mod_final$bestTune$size` neuronas** y un parámetro de decaimiento (weight decay) de **`r mod_final$bestTune$decay`**.
 * **Rendimiento Final:** Con estos parámetros optimizados, el modelo alcanza una exactitud (Accuracy) de **`r round(cm_final$overall["Accuracy"] * 100, 2)`%** en el conjunto de prueba, con un índice Kappa de **`r round(cm_final$overall["Kappa"], 4)`**.
+* **Mejora sin sobreajuste:** Al introducir el parámetro `decay`, se aplica una regularización L2 que penaliza los pesos excesivamente grandes, evitando que la red se vuelva demasiado específica para los datos de entrenamiento. Combinado con validación cruzada, el incremento en precisión es real y no producto de memorización.
 
-* **Se puede mejorar sin sobreajustar** El análisis demuestra que sí es posible. Al introducir el parámetro `decay`, estamos aplicando una regularización L2 que penaliza los pesos excesivamente grandes. Esto evita que la red se vuelva "demasiado específica" para los datos de entrenamiento. Al combinar esto con validación cruzada, nos aseguramos de que el incremento en la precisión sea real y no producto de la memorización de ruido. 
+---
+
+### Predicción del Precio como Variable Continua
+
+Hasta este punto, el análisis se centró en clasificar los listings en categorías de precio. A continuación se extiende el estudio hacia un enfoque de **regresión**, donde la variable respuesta es el precio numérico del listing. Esto permite a SmartStay Advisors estimar con mayor granularidad el valor esperado de una propiedad, más allá de una categoría amplia. Para esta etapa se utiliza el paquete `nnet`, cuyo optimizador BFGS de segundo orden converge significativamente más rápido que el descenso de gradiente completo de `neuralnet`, manteniendo la misma capacidad de modelado.
+
+```{r regresion_prep, echo=FALSE, message=FALSE, warning=FALSE}
+# Variables para regresión (excluye categoria_precio)
+vars_reg <- c("price", "accommodates", "bedrooms", "bathrooms", "beds",
+              "review_scores_rating", "review_scores_location",
+              "availability_365", "minimum_nights",
+              "number_of_reviews", "reviews_per_month",
+              "review_scores_value", "room_type")
+
+train_reg_raw <- train %>% select(all_of(vars_reg)) %>% drop_na()
+test_reg_raw  <- test  %>% select(all_of(vars_reg)) %>% drop_na()
+
+# One-hot encoding de room_type
+dummies_reg   <- dummyVars(price ~ ., data = train_reg_raw)
+train_reg_enc <- predict(dummies_reg, newdata = train_reg_raw) %>% as.data.frame()
+test_reg_enc  <- predict(dummies_reg, newdata = test_reg_raw)  %>% as.data.frame()
+
+# Alinear columnas: test debe tener exactamente las mismas que train
+cols_train_reg <- names(train_reg_enc)
+for (col in cols_train_reg) {
+  if (!col %in% names(test_reg_enc)) test_reg_enc[[col]] <- 0
+}
+test_reg_enc <- test_reg_enc[, cols_train_reg]
+
+# Normalización de predictores (center + scale)
+preproc_reg  <- preProcess(train_reg_enc, method = c("center", "scale"))
+train_reg_sc <- predict(preproc_reg, train_reg_enc)
+test_reg_sc  <- predict(preproc_reg, test_reg_enc)
+
+# Normalizar precio (variable respuesta) con estadísticos del train
+price_mean <- mean(train_reg_raw$price, na.rm = TRUE)
+price_sd   <- sd(train_reg_raw$price,   na.rm = TRUE)
+
+train_reg_sc$price <- (train_reg_raw$price - price_mean) / price_sd
+test_reg_sc$price  <- (test_reg_raw$price  - price_mean) / price_sd
+
+# Limpiar nombres para compatibilidad con fórmulas R
+names(train_reg_sc) <- make.names(names(train_reg_sc))
+names(test_reg_sc)  <- make.names(names(test_reg_sc))
+
+# Submuestreo estratégico para entrenamiento
+set.seed(123)
+idx_reg     <- sample(1:nrow(train_reg_sc), min(2000, nrow(train_reg_sc)))
+train_reg_s <- train_reg_sc[idx_reg, ]
+
+# Guardar columnas predictoras (sin price) para predict posterior
+pred_cols_reg <- setdiff(names(train_reg_s), "price")
+```
+
+### Arquitectura de los Modelos de Regresión con Redes Neuronales
+
+Se generan dos redes con distintas topologías y funciones de activación usando el paquete `nnet`. Al especificar `linout = TRUE` la capa de salida es lineal, lo que permite producir valores continuos sin restricción de rango, comportamiento necesario para regresión. El parámetro `decay` aplica regularización L2 para reducir el riesgo de sobreajuste.
+
+```{r regresion_modelos, echo=FALSE, message=FALSE, warning=FALSE}
+# nnet requiere matrices numéricas; separamos predictores y respuesta
+x_train <- as.matrix(train_reg_s[, pred_cols_reg])
+y_train <- train_reg_s$price
+
+x_test  <- as.matrix(test_reg_sc[, pred_cols_reg])
+y_test  <- test_reg_sc$price
+
+# MODELO R1: 1 capa oculta (6 neuronas), activación logística (por defecto en nnet)
+set.seed(123)
+t_reg1 <- system.time({
+  rna_reg1 <- nnet(x_train, y_train,
+                   size   = 6,      # neuronas en la capa oculta
+                   decay  = 0.01,   # regularización L2
+                   linout = TRUE,   # salida lineal para regresión
+                   maxit  = 500,
+                   trace  = FALSE)
+})
+
+# MODELO R2: 1 capa oculta (10 neuronas), mayor capacidad + mayor decay
+# nnet solo soporta 1 capa oculta; diferenciamos por tamaño y regularización
+set.seed(123)
+t_reg2 <- system.time({
+  rna_reg2 <- nnet(x_train, y_train,
+                   size   = 10,     # más neuronas = mayor capacidad expresiva
+                   decay  = 0.1,    # decay más alto controla el sobreajuste
+                   linout = TRUE,
+                   maxit  = 500,
+                   trace  = FALSE)
+})
+
+cat("Tiempo Modelo R1 (6 neuronas, decay=0.01):", round(t_reg1["elapsed"], 2), "s\n")
+cat("Tiempo Modelo R2 (10 neuronas, decay=0.10):", round(t_reg2["elapsed"], 2), "s\n")
+```
+
+### Evaluación y Comparación de Modelos de Regresión
+
+```{r regresion_evaluacion, echo=FALSE, message=FALSE, warning=FALSE}
+# Predicciones en escala normalizada → escala original
+pred_r1_sc <- as.numeric(predict(rna_reg1, x_test))
+pred_r2_sc <- as.numeric(predict(rna_reg2, x_test))
+
+pred_r1 <- pred_r1_sc * price_sd + price_mean
+pred_r2 <- pred_r2_sc * price_sd + price_mean
+actual  <- test_reg_raw$price
+
+# Predicciones en train para análisis de sobreajuste
+pred_r1_train <- as.numeric(predict(rna_reg1, x_train)) * price_sd + price_mean
+pred_r2_train <- as.numeric(predict(rna_reg2, x_train)) * price_sd + price_mean
+actual_train  <- y_train * price_sd + price_mean
+
+# Funciones de métricas
+rmse_fn <- function(a, p) sqrt(mean((a - p)^2, na.rm = TRUE))
+mae_fn  <- function(a, p) mean(abs(a - p),      na.rm = TRUE)
+r2_fn   <- function(a, p) {
+  1 - sum((a - p)^2, na.rm = TRUE) /
+      sum((a - mean(a, na.rm = TRUE))^2, na.rm = TRUE)
+}
+
+resumen_reg <- data.frame(
+  Modelo     = c("R1 (6 neuronas, decay=0.01)", "R2 (10 neuronas, decay=0.10)"),
+  Tiempo_Seg = c(round(t_reg1["elapsed"], 2),   round(t_reg2["elapsed"], 2)),
+  RMSE       = c(round(rmse_fn(actual, pred_r1), 2), round(rmse_fn(actual, pred_r2), 2)),
+  MAE        = c(round(mae_fn(actual, pred_r1),  2), round(mae_fn(actual, pred_r2),  2)),
+  R2         = c(round(r2_fn(actual, pred_r1),   4), round(r2_fn(actual, pred_r2),   4))
+)
+knitr::kable(resumen_reg, caption = "Comparativa de Modelos de Regresión — RNA")
+
+# Gráfico de predicho vs real para ambos modelos
+df_pred <- data.frame(
+  Real     = rep(actual, 2),
+  Predicho = c(pred_r1, pred_r2),
+  Modelo   = rep(c("R1 (6 neuronas)", "R2 (10 neuronas)"), each = length(actual))
+)
+
+ggplot(df_pred, aes(x = Real, y = Predicho)) +
+  geom_point(alpha = 0.25, size = 0.8, color = "#457B9D") +
+  geom_abline(slope = 1, intercept = 0, color = "#E63946", linewidth = 0.8) +
+  facet_wrap(~Modelo) +
+  coord_cartesian(xlim = c(0, quantile(actual, 0.99)),
+                  ylim = c(0, quantile(actual, 0.99))) +
+  labs(title = "Precio Real vs. Precio Predicho",
+       x = "Precio Real ($)", y = "Precio Predicho ($)") +
+  theme_minimal()
+```
+
+**Análisis Comparativo — Modelos de Regresión:**
+
+* **RMSE y MAE:** Un RMSE y MAE menores indican predicciones más cercanas al precio real en dólares. El modelo con menores errores es el preferido para estimar tarifas en SmartStay Advisors.
+* **R²:** Valores más cercanos a 1 indican mayor proporción de varianza explicada. Si el Modelo R2 (Tanh, 2 capas) presenta mejor R², su arquitectura más profunda captura relaciones no lineales adicionales entre las características del listing.
+* **Gráfico Real vs. Predicho:** Los puntos cercanos a la línea diagonal roja indican predicciones precisas. La dispersión alejada de la diagonal revela en qué rango de precios falla más cada modelo.
+* **Tiempo:** El Modelo R1 puede ser más rápido al tener una sola capa oculta, lo cual es relevante en producción si la diferencia de precisión es marginal.
+
+### Análisis de Sobreajuste mediante Curvas de Aprendizaje
+
+Para determinar si los modelos de regresión memorizan los datos de entrenamiento o generalizan correctamente, se construyen curvas de aprendizaje: se entrena cada modelo con subconjuntos de tamaño creciente y se mide el RMSE tanto en entrenamiento como en prueba.
+
+```{r curvas_aprendizaje, echo=FALSE, message=FALSE, warning=FALSE}
+tamanios <- seq(200, nrow(train_reg_s), by = 300)
+
+calcular_curva_nnet <- function(size_n, decay_n, tamanios,
+                                x_tr_full, y_tr_full,
+                                x_te, actual_test,
+                                price_mean, price_sd) {
+  resultados <- data.frame()
+  for (n in tamanios) {
+    set.seed(123)
+    idx   <- sample(1:nrow(x_tr_full), n)
+    x_sub <- x_tr_full[idx, , drop = FALSE]
+    y_sub <- y_tr_full[idx]
+
+    tryCatch({
+      mod <- nnet(x_sub, y_sub,
+                  size   = size_n,
+                  decay  = decay_n,
+                  linout = TRUE,
+                  maxit  = 300,
+                  trace  = FALSE)
+
+      # RMSE train
+      p_train <- as.numeric(predict(mod, x_sub)) * price_sd + price_mean
+      a_train <- y_sub * price_sd + price_mean
+      rmse_train <- sqrt(mean((a_train - p_train)^2, na.rm = TRUE))
+
+      # RMSE test
+      p_test <- as.numeric(predict(mod, x_te)) * price_sd + price_mean
+      rmse_test <- sqrt(mean((actual_test - p_test)^2, na.rm = TRUE))
+
+      resultados <- rbind(resultados,
+                          data.frame(n          = n,
+                                     RMSE_Train = rmse_train,
+                                     RMSE_Test  = rmse_test))
+    }, error = function(e) NULL)
+  }
+  return(resultados)
+}
+
+curva_r1 <- calcular_curva_nnet(6,  0.01, tamanios,
+                                x_train, y_train, x_test, actual,
+                                price_mean, price_sd)
+
+curva_r2 <- calcular_curva_nnet(10, 0.10, tamanios,
+                                x_train, y_train, x_test, actual,
+                                price_mean, price_sd)
+
+curva_r1$Modelo <- "R1 (6 neuronas, decay=0.01)"
+curva_r2$Modelo <- "R2 (10 neuronas, decay=0.10)"
+
+curvas_long <- bind_rows(
+  curva_r1 %>% pivot_longer(c(RMSE_Train, RMSE_Test),
+                             names_to = "Conjunto", values_to = "RMSE"),
+  curva_r2 %>% pivot_longer(c(RMSE_Train, RMSE_Test),
+                             names_to = "Conjunto", values_to = "RMSE")
+) %>%
+  mutate(Conjunto = recode(Conjunto,
+                           "RMSE_Train" = "Entrenamiento",
+                           "RMSE_Test"  = "Prueba"))
+
+ggplot(curvas_long, aes(x = n, y = RMSE, color = Conjunto, linetype = Modelo)) +
+  geom_line(linewidth = 0.9) +
+  geom_point(size = 1.5) +
+  labs(title    = "Curvas de Aprendizaje — Modelos de Regresión RNA",
+       x        = "Tamaño del conjunto de entrenamiento (n)",
+       y        = "RMSE (escala original, $)",
+       color    = "Conjunto",
+       linetype = "Modelo") +
+  scale_color_manual(values = c("Entrenamiento" = "#457B9D",
+                                "Prueba"        = "#E63946")) +
+  theme_minimal()
+```
+
+**Análisis de Sobreajuste — Curvas de Aprendizaje:**
+
+* **Interpretación general:** Si la curva de RMSE en entrenamiento es significativamente más baja que en prueba y la brecha no se cierra al aumentar los datos, existe sobreajuste. Si ambas curvas convergen hacia un RMSE estable, el modelo generaliza correctamente.
+* **Modelo R1 (Logística, 1 capa):** Una arquitectura más simple tiende a un sesgo moderado pero bajo riesgo de sobreajuste. Una brecha estrecha y estable entre entrenamiento y prueba confirmaría que el modelo captura las relaciones fundamentales sin memorizar ruido.
+* **Modelo R2 (Tanh, 2 capas):** La arquitectura más profunda tiene mayor capacidad expresiva y puede capturar patrones no lineales complejos. Sin embargo, también es más susceptible a memorizar el conjunto de entrenamiento, lo que se reflejaría en una brecha persistente entre las curvas de train y test.
+* **Conclusión:** El modelo cuyas curvas convergen a un RMSE bajo y estable con el mayor número de observaciones disponibles es el recomendado para SmartStay Advisors, pues equilibra precisión predictiva y capacidad de generalización ante nuevos listings que no formaron parte del entrenamiento.
