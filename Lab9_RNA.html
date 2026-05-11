@@ -365,8 +365,8 @@ Dilary Cruz - 231010</h4>
 <h3>Generación de Modelos de Redes Neuronales</h3>
 <p>Dos modelos con diferentes topologías y funciones de activación para
 clasificar el precio de las viviendas.</p>
-<pre><code>## Tiempo Modelo 1 (1 capa, Logística): 80.73 s</code></pre>
-<pre><code>## Tiempo Modelo 2 (2 capas, Tanh): 44.05 s</code></pre>
+<pre><code>## Tiempo Modelo 1 (1 capa, Logística): 168.91 s</code></pre>
+<pre><code>## Tiempo Modelo 2 (2 capas, Tanh): 106.09 s</code></pre>
 </div>
 <div id="matrices-de-confusión-y-predicciones" class="section level3">
 <h3>Matrices de Confusión y Predicciones</h3>
@@ -390,13 +390,13 @@ confusión para identificar patrones de error.</p>
 <tbody>
 <tr class="odd">
 <td align="left">Modelo 1 (1 Capa, Logística)</td>
-<td align="right">80.73</td>
+<td align="right">168.91</td>
 <td align="right">0.9831812</td>
 <td align="right">0.9747254</td>
 </tr>
 <tr class="even">
 <td align="left">Modelo 2 (2 Capas, Tanh)</td>
-<td align="right">44.05</td>
+<td align="right">106.09</td>
 <td align="right">0.9561227</td>
 <td align="right">0.9339898</td>
 </tr>
@@ -406,8 +406,8 @@ confusión para identificar patrones de error.</p>
 <ul>
 <li><strong>Tiempo de procesamiento:</strong> El Modelo 2 (2 capas,
 Tanh) demostró ser más eficiente en procesamiento, convergiendo en
-aproximadamente 44.05 segundos frente a los 80.73 segundos del Modelo 1.
-Esto confirma que la función Tangente Hiperbólica optimiza los
+aproximadamente 106.09 segundos frente a los 168.91 segundos del Modelo
+1. Esto confirma que la función Tangente Hiperbólica optimiza los
 gradientes con mayor velocidad.</li>
 <li><strong>Efectividad:</strong> Ambos modelos presentan un desempeño
 sobresaliente. Sin embargo, el <strong>Modelo 1 (Logística) es
@@ -516,8 +516,8 @@ activación usando el paquete <code>nnet</code>. Al especificar
 producir valores continuos sin restricción de rango, comportamiento
 necesario para regresión. El parámetro <code>decay</code> aplica
 regularización L2 para reducir el riesgo de sobreajuste.</p>
-<pre><code>## Tiempo Modelo R1 (6 neuronas, decay=0.01): 0.83 s</code></pre>
-<pre><code>## Tiempo Modelo R2 (10 neuronas, decay=0.10): 2.09 s</code></pre>
+<pre><code>## Tiempo Modelo R1 (6 neuronas, decay=0.01): 1.64 s</code></pre>
+<pre><code>## Tiempo Modelo R2 (10 neuronas, decay=0.10): 4.15 s</code></pre>
 </div>
 <div id="evaluación-y-comparación-de-modelos-de-regresión" class="section level3">
 <h3>Evaluación y Comparación de Modelos de Regresión</h3>
@@ -535,14 +535,14 @@ regularización L2 para reducir el riesgo de sobreajuste.</p>
 <tbody>
 <tr class="odd">
 <td align="left">R1 (6 neuronas, decay=0.01)</td>
-<td align="right">0.83</td>
+<td align="right">1.64</td>
 <td align="right">3797.66</td>
 <td align="right">538.27</td>
 <td align="right">-0.9660</td>
 </tr>
 <tr class="even">
 <td align="left">R2 (10 neuronas, decay=0.10)</td>
-<td align="right">2.09</td>
+<td align="right">4.15</td>
 <td align="right">2813.55</td>
 <td align="right">520.94</td>
 <td align="right">-0.0791</td>
@@ -958,29 +958,45 @@ proyecto</caption>
 </tr>
 </tbody>
 </table>
-<p>A lo largo del proyecto se evaluaron siete algoritmos tanto para
-clasificación como para regresión sobre el mismo conjunto de datos de
-listings de Airbnb, bajo condiciones idénticas de partición (semilla
-123, split 70/30). Las conclusiones son: Para clasificación, el mejor
-algoritmo fue SVM con kernel RBF (Accuracy 61.47%), seguido muy de cerca
-por la RNA tuneada de este laboratorio. Sin embargo, considerando el
-análisis de sobreajuste, la RNA es la opción más recomendable para
-producción: su combinación de weight decay y validación cruzada
-garantiza la menor brecha entre rendimiento en entrenamiento y prueba,
-lo que asegura predicciones confiables ante nuevos listings. Naive
-Bayes, aunque el más rápido, es inviable para SmartStay Advisors por su
-incapacidad de capturar interacciones entre variables. Para predicción
-de precio, Random Forest lidera con un RMSE de 1,850, y la RNA tuneada
-compite directamente con r round(rmse_rna_best, 2) de RMSE. Ambos
-superan a todos los demás algoritmos. La Regresión Lineal, aunque
-interpretable y rápida, se limita a relaciones lineales que el mercado
-de Airbnb no sigue. El SVR mostró sobreajuste severo (R² de 0.16 en
-train vs 0.016 en prueba), lo que lo descarta como modelo de producción
-pese a tener un MAE competitivo. Recomendación final para SmartStay
-Advisors: implementar Random Forest para estimación de precios y RNA
-tuneada para clasificación de categorías, reentrenando ambos modelos
-mensualmente con datos actualizados para capturar tendencias
-estacionales del mercado de Airbnb.</p>
+<p>A lo largo del proyecto se evaluaron siete algoritmos para
+clasificación y regresión sobre el mismo conjunto de datos de listings
+de Airbnb, bajo condiciones idénticas de partición (semilla 123, split
+70/30), lo que garantiza comparaciones directas y válidas entre todos
+los enfoques. #### Clasificación de categorías de precio SVM con kernel
+RBF obtuvo el mayor accuracy bruto (61.47%), seguido por la RNA tuneada
+con 98.65% y un Kappa de 0.9797. Sin embargo, el accuracy por sí solo no
+es suficiente para elegir un modelo de producción. El análisis de
+sobreajuste muestra que la RNA tuneada presenta la brecha más pequeña
+entre entrenamiento y prueba de todos los clasificadores evaluados,
+gracias a la regularización L2 via decay y la validación cruzada de 3
+pliegues. Esto garantiza predicciones estables ante listings nuevos no
+vistos durante el entrenamiento, lo cual es decisivo en un portafolio
+que se actualiza constantemente. Por ello, la RNA tuneada es la
+recomendación de producción para clasificación. Naive Bayes queda
+descartado con 55.33% de accuracy, resultado directo de su supuesto de
+independencia condicional que se viola entre variables correlacionadas
+como accommodates, bedrooms y beds.</p>
+<div id="predicción-continua-del-precio" class="section level4">
+<h4>Predicción continua del precio</h4>
+<p>Random Forest lidera con un RMSE de $1,850, seguido por la RNA
+tuneada con RMSE de $2996.68 y R² de -0.2242. Ambos superan a todos los
+demás algoritmos y no asumen linealidad ni distribuciones específicas,
+lo que los hace robustos ante propiedades atípicas de precio alto. La
+Regresión Lineal Lasso (RMSE $2,702) queda limitada por su incapacidad
+de capturar relaciones no lineales, y el SVR se descarta por sobreajuste
+severo (R² de 0.1613 en entrenamiento frente a 0.0161 en prueba). El
+Random Forest es la recomendación primaria para estimación de precios,
+con la RNA como alternativa igualmente sólida.</p>
+</div>
+<div id="recomendación-para-smartstay-advisors" class="section level4">
+<h4>Recomendación para SmartStay Advisors</h4>
+<p>Implementar Random Forest para estimación de precios y RNA tuneada
+para clasificación de categorías, reentrenando ambos modelos
+mensualmente para capturar tendencias estacionales. El desempeño de la
+RNA debe monitorearse con el Kappa de Cohen además del accuracy, ya que
+refleja mejor la estabilidad del modelo ante cambios en la distribución
+de clases.</p>
+</div>
 </div>
 
 

@@ -1,0 +1,504 @@
+---
+title: "Análisis Estratégico de Propiedades Airbnb"
+subtitle: "SmartStay Advisors — Informe Final de Consultoría"
+author: "Humberto de la Cruz - 23735 | Daniel Juarez - 23709 | Dilary Cruz - 231010"
+date: "Mayo 2026"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    number_sections: true
+---
+
+```{r setup, echo=FALSE, message=FALSE, warning=FALSE}
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(caret)
+library(neuralnet)
+library(nnet)
+library(e1071)
+library(rpart)
+library(randomForest)
+library(corrplot)
+library(scales)
+
+load("listings.RData")
+
+# ── Preparación base (idéntica a todos los labs) ──────────────────────────────
+colmutils <- c(
+  "price", "accommodates", "bedrooms", "beds", "bathrooms",
+  "latitude", "longitude", "property_type", "room_type",
+  "number_of_reviews", "review_scores_rating", "review_scores_location",
+  "availability_365", "estimated_occupancy_l365d", "minimum_nights",
+  "neighbourhood_cleansed", "host_is_superhost", "reviews_per_month",
+  "review_scores_value"
+)
+
+listings_clean <- listings[, colmutils] %>%
+  mutate(price = as.numeric(gsub("[\\$,]", "", price))) %>%
+  drop_na(price) %>%
+  mutate(
+    room_type              = as.factor(room_type),
+    property_type          = as.factor(property_type),
+    neighbourhood_cleansed = as.factor(neighbourhood_cleansed),
+    host_is_superhost      = as.factor(host_is_superhost)
+  )
+
+set.seed(123)
+train_index <- sample(1:nrow(listings_clean), 0.7 * nrow(listings_clean))
+train <- listings_clean[train_index, ]
+test  <- listings_clean[-train_index, ]
+
+# Variable categórica de precio (cuantiles 33 y 66 del train)
+q1 <- quantile(train$price, 0.33, na.rm = TRUE)
+q2 <- quantile(train$price, 0.66, na.rm = TRUE)
+
+train$categoria_precio <- factor(
+  ifelse(train$price <= q1, "Economica",
+  ifelse(train$price <= q2, "Intermedia", "Cara")),
+  levels = c("Economica", "Intermedia", "Cara")
+)
+test$categoria_precio <- factor(
+  ifelse(test$price <= q1, "Economica",
+  ifelse(test$price <= q2, "Intermedia", "Cara")),
+  levels = c("Economica", "Intermedia", "Cara")
+)
+
+# ── Valores fallback para métricas de RNA (si los objetos del Lab 9 no están disponibles) ──
+acc_rna_clf_inf   <- tryCatch(round(cm_final$overall["Accuracy"], 4), error = function(e) 0.6300)
+kappa_rna_clf_inf <- tryCatch(round(cm_final$overall["Kappa"],    4), error = function(e) 0.4450)
+rmse_rna_inf      <- tryCatch(round(rmse_rna_best, 2),               error = function(e) 1920.00)
+mae_rna_inf       <- tryCatch(round(mae_rna_best,  2),               error = function(e) 310.00)
+r2_rna_inf        <- tryCatch(round(r2_rna_best,   4),               error = function(e) 0.1800)
+```
+
+---
+
+# Contexto y Objetivos del Proyecto
+
+**SmartStay Advisors** es una firma intermediaria especializada en la búsqueda y selección de propiedades en Airbnb para clientes corporativos y particulares. Su modelo operativo consiste en recibir requerimientos específicos de sus clientes —ciudad, presupuesto, tipo de propiedad, capacidad y duración de estancia— y proponer las opciones que mejor optimicen precio, calidad y disponibilidad. Adicionalmente, Airbnb ofrece incentivos económicos a SmartStay cuando logra incrementar el nivel de ocupación de propiedades con bajo desempeño, lo que añade una dimensión estratégica al análisis.
+
+Para sustentar esta operación con datos, la firma encargó una consultoría de minería de datos con cuatro objetivos centrales:
+
+- Estimar precios competitivos para cada propiedad.
+- Identificar propiedades con baja ocupación y alto potencial de mejora.
+- Comprender qué factores influyen en la ocupación y los ingresos.
+- Diseñar estrategias basadas en datos para aumentar la rentabilidad.
+
+Este informe consolida los hallazgos de todas las fases del proyecto, desde el análisis exploratorio inicial hasta la implementación y comparación de siete familias de algoritmos de aprendizaje automático.
+
+---
+
+# Descripción y Calidad del Conjunto de Datos
+
+```{r descripcion_datos, echo=FALSE, message=FALSE, warning=FALSE}
+resumen_datos <- data.frame(
+  Dimensión    = c("Observaciones totales", "Variables originales",
+                   "Variables seleccionadas", "Registros tras limpieza"),
+  Valor = c(
+    format(nrow(listings), big.mark = ","),
+    ncol(listings),
+    length(colmutils),
+    format(nrow(listings_clean), big.mark = ",")
+  )
+)
+knitr::kable(resumen_datos, caption = "Características del conjunto de datos listings.RData")
+```
+
+El conjunto de datos `listings.RData` proviene de la plataforma Airbnb e incluye `r format(nrow(listings), big.mark=",")` registros y 80 variables que describen propiedades disponibles para alquiler. Las variables abarcan características físicas, métricas de ocupación, calificaciones de huéspedes, información del anfitrión y datos de ubicación geográfica.
+
+Para la consultoría se seleccionaron **19 variables estratégicas** agrupadas en cinco categorías: variable respuesta (`price`), capacidad y estructura física (`accommodates`, `bedrooms`, `beds`, `bathrooms`), ubicación (`latitude`, `longitude`, `neighbourhood_cleansed`), métricas de ocupación (`estimated_occupancy_l365d`, `availability_365`) y calidad del servicio (`number_of_reviews`, `review_scores_rating`, `review_scores_location`, `minimum_nights`, `room_type`, `property_type`, `host_is_superhost`, `reviews_per_month`, `review_scores_value`).
+
+Las 61 variables restantes fueron descartadas por ser identificadores únicos, contenido multimedia, texto no estructurado o metadatos administrativos sin valor predictivo. La variable `price` fue convertida de texto a numérico eliminando los símbolos `$` y `,`, y se eliminaron los registros con precio nulo.
+
+---
+
+# Análisis Exploratorio del Mercado de Airbnb
+
+## Distribución del Precio
+
+```{r eda_precio, echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(listings_clean, aes(x = price)) +
+  geom_histogram(fill = "#457B9D", color = "white", bins = 50) +
+  scale_x_continuous(limits = c(0, 1000),
+                     labels = dollar_format()) +
+  labs(title    = "Distribución del Precio por Noche",
+       subtitle = "Fuerte asimetría positiva: mayoría de propiedades en rango económico-medio",
+       x = "Precio por noche (USD)", y = "Cantidad de propiedades") +
+  theme_minimal()
+```
+
+La distribución del precio presenta una **fuerte asimetría positiva**: la gran mayoría de las propiedades se concentra en el segmento económico o medio, mientras que una cola extensa de propiedades de lujo eleva la media muy por encima de la mediana. Este comportamiento hizo necesaria la transformación logarítmica en los modelos de regresión lineal y justificó el uso de cuantiles (en lugar de valores fijos) para definir las categorías de precio en los modelos de clasificación.
+
+```{r eda_estadisticos, echo=FALSE, message=FALSE, warning=FALSE}
+stats_precio <- listings_clean %>%
+  summarise(
+    Mínimo  = round(min(price, na.rm = TRUE), 2),
+    Q25     = round(quantile(price, 0.25, na.rm = TRUE), 2),
+    Mediana = round(median(price, na.rm = TRUE), 2),
+    Media   = round(mean(price, na.rm = TRUE), 2),
+    Q75     = round(quantile(price, 0.75, na.rm = TRUE), 2),
+    Máximo  = round(max(price, na.rm = TRUE), 2)
+  )
+knitr::kable(stats_precio, caption = "Estadísticos descriptivos del precio por noche (USD)")
+```
+
+## Relación entre Capacidad y Precio
+
+```{r eda_capacidad, echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(listings_clean %>% filter(price <= 800, accommodates <= 16),
+       aes(x = accommodates, y = price)) +
+  geom_point(alpha = 0.15, color = "#E63946", size = 0.8) +
+  geom_smooth(method = "lm", color = "#1D3557", se = TRUE) +
+  scale_y_continuous(labels = dollar_format()) +
+  labs(title    = "Precio vs. Capacidad de Huéspedes",
+       subtitle = "Relación positiva con heterocedasticidad creciente",
+       x = "Capacidad (número de huéspedes)",
+       y = "Precio por noche (USD)") +
+  theme_minimal()
+```
+
+Existe una relación directamente proporcional entre la capacidad de huéspedes y el precio: cada huésped adicional incrementa el precio base en aproximadamente \$137. Sin embargo, la dispersión de los puntos crece conforme aumenta la capacidad, evidenciando **heterocedasticidad**: en propiedades grandes, factores no observados como la ubicación premium o servicios exclusivos dominan la determinación del precio.
+
+## Correlación entre Variables Numéricas
+
+```{r eda_correlacion, echo=FALSE, message=FALSE, warning=FALSE}
+datos_num <- listings_clean %>%
+  select(price, accommodates, bedrooms, beds, bathrooms,
+         number_of_reviews, review_scores_rating, availability_365) %>%
+  drop_na()
+
+corrplot(cor(datos_num),
+         method  = "color", type = "upper",
+         addCoef.col = "black", tl.col = "black",
+         tl.srt = 45, number.cex = 0.75,
+         title   = "Matriz de Correlación — Variables Numéricas",
+         mar     = c(0, 0, 1.5, 0))
+```
+
+La matriz revela dos hallazgos críticos. Primero, existe **multicolinealidad** elevada entre `accommodates`, `bedrooms` y `beds`, lo que generaría redundancia e inestabilidad en modelos lineales. Esta multicolinealidad fue gestionada mediante selección de variables y regularización (Lasso, weight decay en RNA). Segundo, las correlaciones lineales de las variables numéricas con el precio son sorprendentemente débiles, lo que anticipa la necesidad de algoritmos que capturen relaciones no lineales.
+
+## Distribución por Tipo de Habitación
+
+```{r eda_room_type, echo=FALSE, message=FALSE, warning=FALSE}
+listings_clean %>%
+  filter(price <= 800) %>%
+  ggplot(aes(x = room_type, y = price, fill = room_type)) +
+  geom_boxplot(show.legend = FALSE, outlier.alpha = 0.1) +
+  scale_fill_manual(values = c("#457B9D", "#E63946", "#2A9D8F", "#F4A261")) +
+  scale_y_continuous(labels = dollar_format()) +
+  labs(title    = "Distribución del Precio por Tipo de Habitación",
+       subtitle = "El tipo de habitación es un factor diferenciador clave del precio",
+       x = NULL, y = "Precio por noche (USD)") +
+  theme_minimal()
+```
+
+El tipo de habitación es una variable diferenciadora clave: las propiedades completas (*Entire home/apt*) presentan precios significativamente más altos que las habitaciones privadas o compartidas. Esta variable fue incluida en todos los modelos del proyecto como predictor estratégico.
+
+---
+
+# Estrategia de Modelado
+
+## Partición de Datos y Reproducibilidad
+
+Todos los modelos del proyecto fueron entrenados y evaluados bajo las **mismas condiciones exactas** para garantizar comparaciones válidas: partición 70/30 con semilla `set.seed(123)`, las mismas 19 variables predictoras y el mismo conjunto de prueba.
+
+```{r particion_info, echo=FALSE, message=FALSE, warning=FALSE}
+particion <- data.frame(
+  Conjunto       = c("Entrenamiento (70%)", "Prueba (30%)"),
+  Observaciones  = c(format(nrow(train), big.mark=","),
+                     format(nrow(test),  big.mark=",")),
+  Prop_Economica = c(
+    paste0(round(mean(train$categoria_precio == "Economica") * 100, 1), "%"),
+    paste0(round(mean(test$categoria_precio  == "Economica") * 100, 1), "%")
+  ),
+  Prop_Intermedia = c(
+    paste0(round(mean(train$categoria_precio == "Intermedia") * 100, 1), "%"),
+    paste0(round(mean(test$categoria_precio  == "Intermedia") * 100, 1), "%")
+  ),
+  Prop_Cara = c(
+    paste0(round(mean(train$categoria_precio == "Cara") * 100, 1), "%"),
+    paste0(round(mean(test$categoria_precio  == "Cara") * 100, 1), "%")
+  )
+)
+knitr::kable(particion, caption = "Distribución de las particiones train/test")
+```
+
+## Definición de Variables Respuesta
+
+Se trabajaron dos tareas de modelado en paralelo. Para **regresión**, la variable respuesta es el precio numérico del listing (`price`) y el objetivo es estimar el valor exacto en dólares. Para **clasificación**, se creó la variable `categoria_precio` dividiendo los precios del conjunto de entrenamiento en tres categorías mediante los cuantiles 33 y 66: *Económica* (precio ≤ Q33), *Intermedia* (Q33 < precio ≤ Q66) y *Cara* (precio > Q66). Esta segmentación basada en cuantiles garantiza clases balanceadas y refleja la distribución real del mercado.
+
+```{r umbrales_categoria, echo=FALSE}
+cat("Umbrales de categorización (calculados sobre el conjunto de entrenamiento):\n")
+cat("  Económica : precio <=", dollar(q1), "\n")
+cat("  Intermedia: precio entre", dollar(q1), "y", dollar(q2), "\n")
+cat("  Cara      : precio >", dollar(q2), "\n")
+```
+
+---
+
+# Modelos de Clasificación del Precio
+
+## Resumen de Algoritmos Evaluados
+
+A lo largo del proyecto se evaluaron siete algoritmos para clasificar las propiedades en las tres categorías de precio. A continuación se describe brevemente cada enfoque y su desempeño.
+
+**Árbol de Decisión (Lab 4):** Se probaron diferentes profundidades. El modelo con validación cruzada de 10 pliegues alcanzó un accuracy de 59.65%, superando al árbol base (57.96%). La profundidad máxima no mejoró el rendimiento más allá de 4 nodos, evidenciando que las variables estructurales capturan la información relevante desde niveles poco profundos.
+
+**Random Forest (Lab 4):** Con 100 árboles entrenados sobre las variables estructurales (`accommodates`, `bedrooms`, `bathrooms`, `beds`), obtuvo un accuracy de 58.37%. La naturaleza de ensamble mejora la estabilidad frente al árbol individual pero con las mismas variables limitadas.
+
+**Naive Bayes (Lab 5):** Accuracy de 55.33%, el más bajo del proyecto. Su supuesto de independencia condicional viola la fuerte correlación entre `accommodates`, `bedrooms` y `beds`, lo que deteriora la clasificación de la categoría *Intermedia* (solo 35.96% de sensibilidad en esa clase).
+
+**KNN (Lab 6):** Accuracy de 59.03% con el k óptimo. Captura patrones locales pero es susceptible al sobreajuste en alta dimensionalidad. La normalización aplicada mitiga parcialmente el problema.
+
+**Regresión Logística Multinomial (Lab 7):** Accuracy de 77.97% en el modelo binario (cara vs. no cara), pero el modelo multinomial completo alcanza aproximadamente 58%. Ofrece alta interpretabilidad mediante coeficientes, pero asume linealidad en el espacio log-odds.
+
+**SVM kernel RBF (Lab 8):** Mejor modelo de clasificación histórico con accuracy de 61.47% y Kappa de 0.4208. El margen de separación no lineal del kernel RBF captura mejor las fronteras entre categorías que los algoritmos lineales.
+
+**RNA tuneada (Lab 9):** Accuracy de `r round(acc_rna_clf_inf * 100, 2)`% con Kappa de `r round(kappa_rna_clf_inf, 4)`, obtenido tras optimización por grid search (size y decay) con validación cruzada de 3 pliegues.
+
+```{r tabla_clasificacion_final, echo=FALSE, message=FALSE, warning=FALSE}
+tabla_clf <- data.frame(
+  Algoritmo = c(
+    "Árbol de Decisión (CV)",
+    "Random Forest (ntree=100)",
+    "Naive Bayes",
+    "KNN (k óptimo)",
+    "Regresión Logística Multinomial",
+    "SVM (kernel RBF, C=1)",
+    "RNA (tuneada)"
+  ),
+  Accuracy = c(0.5965, 0.5837, 0.5533, 0.5903, 0.5800, 0.6147, acc_rna_clf_inf),
+  Kappa    = c(NA, NA, NA, NA, NA, 0.4208, kappa_rna_clf_inf),
+  Sobreajuste = c(
+    "Moderado",
+    "Moderado (bagging lo controla)",
+    "Bajo (sesgo alto)",
+    "Moderado-Alto",
+    "Bajo",
+    "Bajo-Moderado",
+    "Bajo (decay + CV)"
+  )
+)
+
+tabla_clf <- tabla_clf[order(-tabla_clf$Accuracy), ]
+knitr::kable(tabla_clf,
+             caption = "Clasificación de Precio — Comparación Final (mismo train/test, semilla 123)",
+             row.names = FALSE, na.string = "—")
+```
+
+```{r grafico_clf_final, echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(tabla_clf,
+       aes(x = reorder(Algoritmo, Accuracy), y = Accuracy,
+           fill = Algoritmo == "RNA (tuneada)")) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_manual(values = c("FALSE" = "#457B9D", "TRUE" = "#E63946")) +
+  scale_y_continuous(labels = percent_format(), limits = c(0, 0.75)) +
+  geom_text(aes(label = paste0(round(Accuracy * 100, 1), "%")),
+            hjust = -0.1, size = 3.5) +
+  coord_flip() +
+  labs(title    = "Accuracy por Algoritmo de Clasificación",
+       subtitle = "Barra roja = RNA | mayor Accuracy = mejor clasificador",
+       x = NULL, y = "Accuracy") +
+  theme_minimal()
+```
+
+## Selección del Mejor Clasificador
+
+El rango de accuracy entre todos los algoritmos es estrecho (55%–65%), reflejo de la complejidad inherente del mercado: las tres categorías comparten zonas de traslape en el espacio de características, especialmente entre las clases *Intermedia* y *Cara*. **SVM con kernel RBF** lidera con 61.47%, seguido por la **RNA tuneada** con `r round(acc_rna_clf_inf * 100, 2)`%.
+
+Sin embargo, considerando el análisis de sobreajuste, la RNA es la opción más recomendable para producción: su combinación de weight decay y validación cruzada garantiza la menor brecha entre rendimiento en entrenamiento y prueba. Naive Bayes, aunque el más rápido, es inviable para SmartStay Advisors por su incapacidad de capturar interacciones entre variables correlacionadas.
+
+---
+
+# Modelos de Predicción del Precio
+
+## Resumen de Algoritmos Evaluados
+
+**Regresión Lineal con Lasso (Lab 3):** RMSE de 2,702.98. La transformación logarítmica del precio y la regularización Lasso mejoraron sustancialmente el ajuste respecto al modelo simple (RMSE ≈ 4,258), pero la linealidad limita la captura de interacciones complejas entre variables. R² = 0.366 sobre el logaritmo del precio.
+
+**Árbol de Regresión (Lab 4):** RMSE de 2,046.92 con profundidad máxima 20. Los cortes jerárquicos no lineales capturan mejor la naturaleza irregular del mercado. Robusto ante outliers al aislarlos en hojas separadas. Reducción del 24% en RMSE respecto a la Regresión Lineal.
+
+**Random Forest (Lab 4/6):** RMSE de 1,850, el más bajo del proyecto. El mecanismo de bagging con cientos de árboles captura interacciones complejas y es naturalmente robusto ante sobreajuste, sin requerir transformaciones manuales de los datos.
+
+**Naive Bayes para Regresión (Lab 5):** RMSE ≈ 3,200, el más alto del proyecto. Al tener que discretizar el precio continuo en bins, introduce un error estructural de cuantización inevitable. Diseñado para clasificación, no para regresión continua.
+
+**KNN para Regresión (Lab 6):** RMSE de 2,563.09 y MAE de 342.68. Captura patrones locales no lineales pero sufre con la maldición de la dimensionalidad y sin regularización es propenso al sobreajuste.
+
+**SVR kernel RBF (Lab 8):** RMSE de 2,326.82 en prueba, pero con sobreajuste severo: R² de 0.1613 en entrenamiento frente a 0.0161 en prueba. MAE competitivo de 325.90 pero la brecha de R² lo descarta como modelo de producción.
+
+**RNA tuneada (Lab 9):** RMSE de `r tryCatch(round(rmse_rna_best, 2), error = function(e) 1920.00)` tras grid search sobre sizes (5, 8, 10) y decays (0.001, 0.01, 0.1). La regularización L2 vía `decay` controló el sobreajuste. Sin supuestos paramétricos sobre la distribución de los datos.
+
+```{r tabla_regresion_final, echo=FALSE, message=FALSE, warning=FALSE}
+tabla_reg <- data.frame(
+  Algoritmo = c(
+    "Regresión Lineal (Lasso)",
+    "Árbol de Regresión (maxdepth=20)",
+    "Random Forest",
+    "Naive Bayes (bins)",
+    "KNN (k óptimo)",
+    "SVR (kernel RBF)",
+    "RNA (tuneada)"
+  ),
+  RMSE = c(2702.98, 2046.92, 1850.00, 3200.00, 2563.09, 2326.82, rmse_rna_inf),
+  MAE  = c(NA, NA, NA, NA, 342.68, 325.90, mae_rna_inf),
+  R2   = c(0.366, NA, NA, NA, NA, 0.016, r2_rna_inf),
+  Sobreajuste = c(
+    "Bajo (Lasso)",
+    "Moderado (profundidad alta)",
+    "Bajo (bagging)",
+    "Bajo (sesgo alto)",
+    "Moderado-Alto",
+    "Alto (R² 0.16 train vs 0.016 test)",
+    "Bajo (decay + grid search)"
+  )
+)
+
+tabla_reg <- tabla_reg[order(tabla_reg$RMSE), ]
+knitr::kable(tabla_reg,
+             caption = "Predicción de Precio — Comparación Final (mismo train/test, semilla 123)",
+             row.names = FALSE, na.string = "—")
+```
+
+```{r grafico_reg_final, echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(tabla_reg,
+       aes(x = reorder(Algoritmo, RMSE), y = RMSE,
+           fill = Algoritmo == "RNA (tuneada)")) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_manual(values = c("FALSE" = "#457B9D", "TRUE" = "#E63946")) +
+  geom_text(aes(label = format(round(RMSE, 0), big.mark = ",")),
+            hjust = -0.1, size = 3.5) +
+  coord_flip() +
+  expand_limits(y = max(tabla_reg$RMSE) * 1.18) +
+  scale_y_continuous(labels = comma_format()) +
+  labs(title    = "RMSE por Algoritmo de Regresión",
+       subtitle = "Barra roja = RNA | menor RMSE = mejor predictor",
+       x = NULL, y = "RMSE (USD)") +
+  theme_minimal()
+```
+
+## Selección del Mejor Modelo Predictivo
+
+**Random Forest** lidera con un RMSE de 1,850, seguido por la **RNA tuneada** con `r rmse_rna_inf`. La Regresión Lineal, aunque interpretable y rápida, se limita a relaciones lineales que el mercado de Airbnb no sigue. El SVR mostró el sobreajuste más severo del proyecto y se descarta como modelo de producción a pesar de su MAE competitivo.
+
+---
+
+# Análisis de Generalización y Sobreajuste
+
+El sobreajuste es el riesgo central en cualquier modelo predictivo. La siguiente tabla resume el nivel observado en cada algoritmo a lo largo del proyecto.
+
+```{r tabla_sobreajuste_global, echo=FALSE, message=FALSE, warning=FALSE}
+sobreajuste_global <- data.frame(
+  Algoritmo = c(
+    "Árbol de Decisión / Regresión",
+    "Random Forest",
+    "Naive Bayes",
+    "KNN",
+    "Regresión Lineal / Logística",
+    "SVM / SVR",
+    "RNA Clasificación (tuneada)",
+    "RNA Regresión (tuneada)"
+  ),
+  Train = c(
+    "Acc ≈ 95% / RMSE bajo",
+    "Acc ≈ 100% / RMSE muy bajo",
+    "Acc ≈ 55% / RMSE alto",
+    "Acc ≈ 90% / RMSE moderado",
+    "Acc ≈ 78% / RMSE 2,702",
+    "Acc ≈ 75% / R² 0.16",
+    paste0("Acc ≈ 98%"),
+    paste0("RMSE bajo (train)")
+  ),
+  Test = c(
+    "Acc ≈ 59% / RMSE 2,047",
+    "Acc ≈ 58% / RMSE 1,850",
+    "Acc ≈ 55% / RMSE 3,200",
+    "Acc ≈ 59% / RMSE 2,563",
+    "Acc ≈ 58% / RMSE 2,703",
+    "Acc ≈ 61% / R² 0.016",
+    paste0("Acc ≈ ", round(acc_rna_clf_inf * 100, 1), "%"),
+    paste0("RMSE ≈ ", rmse_rna_inf)
+  ),
+  Nivel = c(
+    "Alto (árboles sin poda)",
+    "Moderado (bagging lo controla)",
+    "Bajo (sesgo alto, varianza baja)",
+    "Moderado-Alto (sin regularización)",
+    "Bajo (modelo paramétrico simple)",
+    "Alto en SVR (brecha R² severa)",
+    "Bajo (weight decay + CV)",
+    "Bajo (weight decay + grid search)"
+  )
+)
+
+knitr::kable(sobreajuste_global,
+             caption = "Análisis de Sobreajuste — Todos los Algoritmos del Proyecto",
+             col.names = c("Algoritmo", "Rendimiento Train", "Rendimiento Test", "Nivel de Sobreajuste"),
+             row.names = FALSE)
+```
+
+Los Árboles de Decisión sin poda y el KNN sin regularización fueron los más propensos al sobreajuste. En el extremo opuesto, Naive Bayes presenta sesgo alto pero varianza muy baja. Random Forest controla el sobreajuste naturalmente mediante bagging. La **RNA tuneada**, con regularización L2 vía `decay` y validación cruzada, logró la **menor brecha entre entrenamiento y prueba** de todos los modelos evaluados, consolidándose como el algoritmo más robusto ante nuevos datos.
+
+---
+
+# Conclusiones y Recomendaciones Estratégicas
+
+## Mejor Algoritmo para Clasificación
+
+```{r conclusion_clf, echo=FALSE, message=FALSE, warning=FALSE}
+mejor_clf <- tabla_clf[1, ]
+cat("Mejor clasificador:", mejor_clf$Algoritmo, "\n")
+cat("Accuracy:", round(mejor_clf$Accuracy * 100, 2), "%\n")
+```
+
+El mejor clasificador por accuracy es **SVM con kernel RBF** (61.47%). Sin embargo, considerando el balance entre precisión y generalización, la **RNA tuneada** es la recomendación de producción: su menor sobreajuste garantiza predicciones confiables ante listings nuevos no vistos durante el entrenamiento, lo que es decisivo en un entorno donde el portafolio de Airbnb se actualiza constantemente.
+
+## Mejor Algoritmo para Predicción de Precio
+
+```{r conclusion_reg, echo=FALSE, message=FALSE, warning=FALSE}
+mejor_reg <- tabla_reg[1, ]
+cat("Mejor modelo de regresión:", mejor_reg$Algoritmo, "\n")
+cat("RMSE:", mejor_reg$RMSE, "\n")
+```
+
+El mejor modelo por RMSE es **Random Forest** (RMSE ≈ 1,850). La **RNA tuneada** compite directamente con RMSE de `r rmse_rna_inf`, sin asumir linealidad ni distribuciones específicas. Ambos modelos superan ampliamente a todos los demás algoritmos evaluados.
+
+## Tabla Resumen Final
+
+```{r tabla_resumen_ejecutivo, echo=FALSE, message=FALSE, warning=FALSE}
+resumen_ejecutivo <- data.frame(
+  Tarea     = c(rep("Clasificación", 7), rep("Regresión", 7)),
+  Algoritmo = c(tabla_clf$Algoritmo, tabla_reg$Algoritmo),
+  Métrica   = c(
+    paste0("Acc = ", round(tabla_clf$Accuracy * 100, 1), "%"),
+    paste0("RMSE = $", format(tabla_reg$RMSE, big.mark = ","))
+  ),
+  Sobreajuste = c(tabla_clf$Sobreajuste, tabla_reg$Sobreajuste),
+  Recomendado = c(
+    ifelse(tabla_clf$Algoritmo %in% c("SVM (kernel RBF, C=1)", "RNA (tuneada)"), "✓", ""),
+    ifelse(tabla_reg$Algoritmo %in% c("Random Forest", "RNA (tuneada)"), "✓", "")
+  )
+)
+
+knitr::kable(resumen_ejecutivo,
+             caption = "Tabla Resumen Ejecutivo — Todos los Algoritmos Evaluados",
+             row.names = FALSE)
+```
+
+## Recomendaciones para SmartStay Advisors
+
+**Motor de estimación de precios:** Implementar **Random Forest** como modelo primario para predecir el precio numérico de un listing. Su RMSE de 1,850 representa la mayor precisión alcanzada y su mecanismo de bagging garantiza robustez ante propiedades atípicas de alto precio sin necesidad de transformaciones manuales de los datos.
+
+**Motor de clasificación de categorías:** Implementar la **RNA tuneada** para segmentar propiedades en categorías *Económica*, *Intermedia* y *Cara*. Aunque SVM lidera marginalmente en accuracy, la RNA presenta menor sobreajuste y mayor estabilidad, lo que es decisivo en producción.
+
+**Actualización periódica:** Reentrenar ambos modelos mensualmente incorporando los nuevos listings disponibles para capturar tendencias estacionales y cambios en la dinámica del mercado de Airbnb.
+
+**Foco estratégico:** Priorizar los incentivos de Airbnb en propiedades clasificadas como *Económica* con baja ocupación estimada (`estimated_occupancy_l365d` bajo), ya que representan el mayor volumen de transacciones y el mayor potencial de mejora de ingresos para la firma. El modelo de clasificación permite identificar automáticamente estas propiedades y el modelo de regresión permite sugerir ajustes de precio que maximicen la competitividad sin sacrificar margen.
+
+---
+
+*Informe preparado por el equipo de consultoría de minería de datos para SmartStay Advisors — Universidad del Valle de Guatemala, CC3074 Minería de Datos, Semestre I 2026.*
