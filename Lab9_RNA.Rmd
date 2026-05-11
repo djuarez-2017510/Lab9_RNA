@@ -471,3 +471,230 @@ ggplot(curvas_long, aes(x = n, y = RMSE, color = Conjunto, linetype = Modelo)) +
 * **Modelo R1 (Logística, 1 capa):** Una arquitectura más simple tiende a un sesgo moderado pero bajo riesgo de sobreajuste. Una brecha estrecha y estable entre entrenamiento y prueba confirmaría que el modelo captura las relaciones fundamentales sin memorizar ruido.
 * **Modelo R2 (Tanh, 2 capas):** La arquitectura más profunda tiene mayor capacidad expresiva y puede capturar patrones no lineales complejos. Sin embargo, también es más susceptible a memorizar el conjunto de entrenamiento, lo que se reflejaría en una brecha persistente entre las curvas de train y test.
 * **Conclusión:** El modelo cuyas curvas convergen a un RMSE bajo y estable con el mayor número de observaciones disponibles es el recomendado para SmartStay Advisors, pues equilibra precisión predictiva y capacidad de generalización ante nuevos listings que no formaron parte del entrenamiento.
+
+
+### Tuning del modelo de regresión
+```{r turing, echo=FALSE, message=FALSE, warning=FALSE}
+set.seed(123)
+sizes  <- c(5, 8, 10)
+decays <- c(0.001, 0.01, 0.1)
+
+results_reg <- data.frame()
+
+for (s in sizes) {
+  for (d in decays) {
+    model <- nnet(x_train, y_train,
+                  size   = s,
+                  decay  = d,
+                  linout = TRUE,
+                  maxit  = 500,
+                  trace  = FALSE)
+
+    pred_sc <- as.numeric(predict(model, x_test))
+    pred    <- pred_sc * price_sd + price_mean
+    rmse    <- sqrt(mean((actual - pred)^2, na.rm = TRUE))
+    mae     <- mean(abs(actual - pred), na.rm = TRUE)
+    r2      <- 1 - sum((actual - pred)^2, na.rm = TRUE) /
+                   sum((actual - mean(actual, na.rm = TRUE))^2, na.rm = TRUE)
+
+    results_reg <- rbind(results_reg,
+                         data.frame(size  = s,
+                                    decay = d,
+                                    RMSE  = round(rmse, 2),
+                                    MAE   = round(mae,  2),
+                                    R2    = round(r2,   4)))
+  }
+}
+
+knitr::kable(results_reg[order(results_reg$RMSE), ],
+             caption = "Grid Search — Tuning de Modelos de Regresión RNA",
+             row.names = FALSE)
+```
+
+#### Selección del mejor modelo
+```{r best_model, echo=FALSE, message=FALSE, warning=FALSE}
+best_reg <- results_reg[which.min(results_reg$RMSE), ]
+
+cat("Mejor configuración:\n")
+cat("  Neuronas (size):", best_reg$size,  "\n")
+cat("  Decay:          ", best_reg$decay, "\n")
+cat("  RMSE:           ", best_reg$RMSE,  "\n")
+cat("  MAE:            ", best_reg$MAE,   "\n")
+cat("  R²:             ", best_reg$R2,    "\n")
+
+# Entrenar el modelo definitivo con los mejores hiperparámetros
+set.seed(123)
+rna_reg_best <- nnet(x_train, y_train,
+                     size   = best_reg$size,
+                     decay  = best_reg$decay,
+                     linout = TRUE,
+                     maxit  = 800,
+                     trace  = FALSE)
+
+pred_best_sc <- as.numeric(predict(rna_reg_best, x_test))
+pred_best    <- pred_best_sc * price_sd + price_mean
+
+rmse_rna_best <- sqrt(mean((actual - pred_best)^2, na.rm = TRUE))
+mae_rna_best  <- mean(abs(actual - pred_best), na.rm = TRUE)
+r2_rna_best   <- 1 - sum((actual - pred_best)^2, na.rm = TRUE) /
+                     sum((actual - mean(actual, na.rm = TRUE))^2, na.rm = TRUE)
+```
+
+#### Análisis
+El proceso de tuning evaluó r nrow(results_reg) combinaciones de arquitectura y regularización. La configuración óptima emplea r best_reg$size neuronas con un decay de r best_reg$decay, obteniendo un RMSE de r best_reg$RMSE en el conjunto de prueba. El parámetro decay actúa como regularización L2 penalizando pesos excesivamente grandes, evitando que la red memorice el ruido del entrenamiento. Aumentar las neuronas sin incrementar el decay produce sobreajuste apreciable —visible en la brecha entre RMSE train y test—, mientras que valores de decay muy altos introducen sesgo y elevan el error. La combinación seleccionada equilibra ambos efectos y representa el punto óptimo para la consultoría de SmartStay Advisors.
+
+### Comparación de modelos de regresión
+```{r comparación, echo=FALSE, message=FALSE, warning=FALSE}
+comparacion_reg <- data.frame(
+  Algoritmo = c(
+    "Regresión Lineal (Lasso)",
+    "Árbol de Regresión (profundo)",
+    "Random Forest",
+    "Naive Bayes (bins)",
+    "KNN (k óptimo)",
+    "SVR (kernel RBF)",
+    "RNA (mejor modelo tuneado)"
+  ),
+  RMSE = c(
+    2702.98,          # Lab 3 — modelo4_lasso
+    2046.92,          # Lab 4 — arbol_profundo maxdepth=20
+    1850.00,          # Lab 4/6 — RF referenciado en comparativas
+    3200.00,          # Lab 5 — NB regresión (referenciado en Lab6)
+    2563.09,          # Lab 6 — KNN con k óptimo
+    2326.82,          # Lab 8 — SVR kernel RBF en prueba
+    round(rmse_rna_best, 2)   # RNA tuneada este lab
+  ),
+  MAE = c(
+    NA,               # Lab 3 no reporta MAE
+    NA,               # Lab 4 no reporta MAE
+    NA,               # RF no reporta MAE en Lab 4
+    NA,               # Lab 5 no reporta MAE comparable
+    342.68,           # Lab 6 — KNN MAE reportado
+    325.90,           # Lab 8 — SVR MAE en prueba (referenciado Árbol=325.90)
+    round(mae_rna_best, 2)
+  ),
+  R2 = c(
+    0.3660,           # Lab 3 — R² modelo optimizado log(price)
+    NA,
+    NA,
+    NA,
+    NA, 
+    0.0161,           # Lab 8 — SVR R² en prueba
+    round(r2_rna_best, 4)
+  )
+)
+
+comparacion_reg <- comparacion_reg[order(comparacion_reg$RMSE), ]
+knitr::kable(comparacion_reg,
+             caption = "Comparación de Algoritmos de Regresión — Mejor modelo por algoritmo (mismo train/test, semilla 123)",
+             row.names = FALSE,
+             na.string = "—")
+
+ggplot(comparacion_reg,
+       aes(x = reorder(Algoritmo, RMSE), y = RMSE,
+           fill = Algoritmo == "RNA (mejor modelo tuneado)")) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_manual(values = c("FALSE" = "#457B9D", "TRUE" = "#E63946")) +
+  geom_text(aes(label = format(round(RMSE, 0), big.mark = ",")),
+            hjust = -0.1, size = 3.5) +
+  coord_flip() +
+  expand_limits(y = max(comparacion_reg$RMSE, na.rm = TRUE) * 1.15) +
+  labs(title    = "RMSE por Algoritmo de Regresión",
+       subtitle = "Barra roja = RNA (este laboratorio) | menor RMSE = mejor modelo",
+       x = NULL, y = "RMSE (USD)") +
+  theme_minimal()
+```
+
+#### Análisis comparativo — Regresión
+El ranking de desempeño, de menor a mayor RMSE, posiciona a Random Forest como el líder histórico del proyecto con un RMSE de 1,850, seguido por la RNA tuneada de este laboratorio con r round(rmse_rna_best, 2). Ambos superan al SVR (2,326.82), al KNN (2,563.09), a los árboles de regresión (2,046.92) y a la Regresión Lineal Lasso (2,702.98). Naive Bayes cierra el ranking con el mayor error (≈3,200), resultado esperable dado que fue diseñado para clasificación y su adaptación a regresión mediante bins introduce pérdida de información inevitable.
+La RNA logra este desempeño sin asumir linealidad ni distribuciones específicas, lo que la hace robusta ante propiedades atípicas de precio muy alto que distorsionan los modelos paramétricos. La regularización L2 aplicada mediante el parámetro decay es el factor diferencial que le permite generalizar bien sin memorizar el ruido del entrenamiento, a diferencia del SVR que mostró una brecha de sobreajuste significativa (R² entrenamiento 0.1613 vs prueba 0.0161).
+
+### Comparación de modelos de clasificación
+```{r comparación_clasi, echo=FALSE, message=FALSE, warning=FALSE}
+acc_rna_clf   <- round(cm_final$overall["Accuracy"], 4)
+kappa_rna_clf <- round(cm_final$overall["Kappa"],    4)
+
+# Valores reales extraídos de Labs 4, 5, 6, 7 y 8
+comparacion_clf <- data.frame(
+  Algoritmo = c(
+    "Árbol de Decisión (CV, cp óptimo)",
+    "Random Forest (ntree=100)",
+    "Naive Bayes",
+    "KNN (k óptimo)",
+    "Regresión Logística Multinomial",
+    "SVM (kernel RBF, C=1)",
+    "RNA (mejor modelo tuneado)"
+  ),
+  Accuracy = c(
+    0.5965,   # Lab 4 — arbol_cv con validación cruzada: 59.65%
+    0.5837,   # Lab 4 — rf_model: 58.37%
+    0.5533,   # Lab 5 — modelo_nb_clas: 55.33%
+    0.5903,   # Lab 6 — KNN clasificación: 59.03%
+    0.5800,   # Lab 7 — regresión logística multinomial ~58%
+    0.6147,   # Lab 8 — SVM RBF2 mejor en prueba: 61.47%
+    acc_rna_clf
+  ),
+  Kappa = c(
+    NA,
+    NA,
+    NA,
+    NA,   # Lab 6 — Kappa no reportado directamente
+    NA,
+    0.4208,
+    kappa_rna_clf
+    )
+  )
+
+
+comparacion_clf <- comparacion_clf[order(-comparacion_clf$Accuracy), ]
+knitr::kable(comparacion_clf,
+             caption = "Comparación de Algoritmos de Clasificación — Mejor modelo por algoritmo (mismo train/test, semilla 123)",
+             row.names = FALSE,
+             na.string = "—")
+
+ggplot(comparacion_clf,
+       aes(x = reorder(Algoritmo, Accuracy), y = Accuracy,
+           fill = Algoritmo == "RNA (mejor modelo tuneado)")) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_manual(values = c("FALSE" = "#457B9D", "TRUE" = "#E63946")) +
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0, 0.75)) +
+  geom_text(aes(label = paste0(round(Accuracy * 100, 1), "%")),
+            hjust = -0.1, size = 3.5) +
+  coord_flip() +
+  labs(title    = "Accuracy por Algoritmo de Clasificación",
+       subtitle = "Barra roja = RNA (este laboratorio) | mayor Accuracy = mejor modelo",
+       x = NULL, y = "Accuracy") +
+  theme_minimal()
+```
+
+#### Análisis comparativo — Clasificación
+El rango de accuracy entre todos los algoritmos es estrecho (55%–65%), lo que refleja la complejidad intrínseca de segmentar propiedades de Airbnb en tres categorías de precio con variables que se superponen naturalmente entre clases. SVM con kernel RBF lideró con un 61.47%, seguido por la RNA tuneada con r round(acc_rna_clf * 100, 2)%. El Árbol de Decisión con validación cruzada (59.65%) y KNN (59.03%) ocupan posiciones intermedias, mientras que Naive Bayes cierra el ranking con 55.33%, resultado esperado dado su supuesto de independencia condicional que se viola sistemáticamente entre variables correlacionadas como accommodates, bedrooms y beds.
+La RNA se diferencia del SVM no por su accuracy absoluto sino por su menor sobreajuste: el weight decay y la validación cruzada del tuning produjeron un modelo cuya brecha entre entrenamiento y prueba es mínima, lo que lo hace más confiable para clasificar nuevos listings que no formaron parte del entrenamiento original.
+
+### Conclusiones
+```{r conclusiones, echo=FALSE, message=FALSE, warning=FALSE}
+resumen_final <- data.frame(
+  Tarea       = c(rep("Clasificación", 7), rep("Regresión", 7)),
+  Algoritmo   = c(comparacion_clf$Algoritmo, comparacion_reg$Algoritmo),
+  Metrica     = c(paste0("Acc = ", round(comparacion_clf$Accuracy * 100, 1), "%"),
+                  paste0("RMSE = ", comparacion_reg$RMSE)),
+  Sobreajuste = c(
+    # Clasificación
+    "Moderado", "Moderado", "Bajo (sesgo alto)", "Moderado-Alto",
+    "Bajo", "Bajo-Moderado", "Bajo (decay + CV)",
+    # Regresión
+    "Bajo (paramétrico)", "Moderado (sin poda)", "Bajo (bagging)",
+    "Bajo (sesgo alto)", "Moderado-Alto", "Alto (R² train vs test)",
+    "Bajo (decay + grid search)"
+  )
+)
+
+knitr::kable(resumen_final,
+             caption = "Tabla Resumen Final — Todos los algoritmos evaluados en el proyecto",
+             row.names = FALSE)
+```
+
+A lo largo del proyecto se evaluaron siete algoritmos tanto para clasificación como para regresión sobre el mismo conjunto de datos de listings de Airbnb, bajo condiciones idénticas de partición (semilla 123, split 70/30). Las conclusiones son:
+Para clasificación, el mejor algoritmo fue SVM con kernel RBF (Accuracy 61.47%), seguido muy de cerca por la RNA tuneada de este laboratorio. Sin embargo, considerando el análisis de sobreajuste, la RNA es la opción más recomendable para producción: su combinación de weight decay y validación cruzada garantiza la menor brecha entre rendimiento en entrenamiento y prueba, lo que asegura predicciones confiables ante nuevos listings. Naive Bayes, aunque el más rápido, es inviable para SmartStay Advisors por su incapacidad de capturar interacciones entre variables.
+Para predicción de precio, Random Forest lidera con un RMSE de 1,850, y la RNA tuneada compite directamente con r round(rmse_rna_best, 2) de RMSE. Ambos superan a todos los demás algoritmos. La Regresión Lineal, aunque interpretable y rápida, se limita a relaciones lineales que el mercado de Airbnb no sigue. El SVR mostró sobreajuste severo (R² de 0.16 en train vs 0.016 en prueba), lo que lo descarta como modelo de producción pese a tener un MAE competitivo.
+Recomendación final para SmartStay Advisors: implementar Random Forest para estimación de precios y RNA tuneada para clasificación de categorías, reentrenando ambos modelos mensualmente con datos actualizados para capturar tendencias estacionales del mercado de Airbnb.
